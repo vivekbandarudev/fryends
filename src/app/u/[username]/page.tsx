@@ -1,38 +1,122 @@
 import { createClient } from '@/lib/supabase/server'
-import { notFound } from 'next/navigation'
+import { redirect } from 'next/navigation'
 import Link from 'next/link'
-import { FileIcon, ArrowLeft } from 'lucide-react'
+import { FileIcon, ArrowLeft, Lock } from 'lucide-react'
+
 export default async function UserPage({ params }: { params: { username: string } }) {
-  const supabase = createClient()
-  const { data: profile } = await supabase.from('profiles').select('*').eq('username', params.username).single()
-  if (!profile) notFound()
-  const { data: files } = await supabase.from('files').select('*').eq('owner_id', profile.user_id).eq('is_public', true).order('created_at', { ascending: false })
-  const SUPA_URL = process.env.NEXT_PUBLIC_SUPABASE_URL
-  function fmt(b: number) { if(!b) return ''; if(b<1024*1024) return (b/1024).toFixed(1)+' KB'; return (b/(1024*1024)).toFixed(1)+' MB' }
-  return (
-    <div className="min-h-screen bg-gray-950 p-4">
-      <div className="max-w-4xl mx-auto">
-        <Link href="/" className="inline-flex items-center gap-2 text-gray-400 hover:text-white text-sm mb-6"><ArrowLeft className="w-4 h-4"/>Back to Home</Link>
-        <div className="bg-gray-900 rounded-2xl p-8 mb-8 text-center">
-          <div className="w-20 h-20 rounded-full bg-gradient-to-br from-purple-500 to-pink-500 flex items-center justify-center text-3xl font-bold mx-auto mb-4">{profile.username[0].toUpperCase()}</div>
-          <h1 className="text-2xl font-bold">{profile.full_name || profile.username}</h1>
-          <p className="text-gray-400">@{profile.username}</p>
-          {profile.bio && <p className="text-gray-300 mt-2 max-w-md mx-auto">{profile.bio}</p>}
-          <p className="text-gray-500 text-sm mt-2">{files?.length||0} files</p>
+  const supabase = await createClient()
+
+  // Must be logged in
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) {
+    redirect('/login')
+  }
+
+  // Get the logged-in user's profile
+  const { data: myProfile } = await supabase
+    .from('profiles')
+    .select('username, full_name')
+    .eq('user_id', user.id)
+    .single()
+
+  // Get the target profile
+  const { data: profile } = await supabase
+    .from('profiles')
+    .select('username, full_name, bio')
+    .eq('username', params.username)
+    .single()
+
+  if (!profile) {
+    return (
+      <div className="min-h-screen bg-[#0a0a0f] text-white flex items-center justify-center">
+        <div className="text-center">
+          <h1 className="text-2xl font-bold mb-2">User not found</h1>
+          <Link href="/dashboard" className="text-purple-400 hover:underline">Back to Dashboard</Link>
         </div>
-        {(!files||files.length===0) ? (
-          <div className="text-center py-20 text-gray-500"><FileIcon className="w-12 h-12 mx-auto mb-3 opacity-30"/><p>No public files yet</p></div>
+      </div>
+    )
+  }
+
+  // Only the owner can view their own files
+  const isOwner = myProfile?.username === params.username
+
+  if (!isOwner) {
+    return (
+      <div className="min-h-screen bg-[#0a0a0f] text-white flex items-center justify-center">
+        <div className="text-center space-y-4">
+          <Lock className="w-16 h-16 text-purple-400 mx-auto" />
+          <h1 className="text-2xl font-bold">Private Space</h1>
+          <p className="text-gray-400">This space belongs to <span className="text-purple-300">{profile.full_name || profile.username}</span>.</p>
+          <p className="text-gray-500 text-sm">Only the owner can view their files.</p>
+          <Link href="/dashboard" className="inline-block mt-4 text-purple-400 hover:underline">← Back to Dashboard</Link>
+        </div>
+      </div>
+    )
+  }
+
+  // Fetch owner's files
+  const { data: files } = await supabase
+    .from('files')
+    .select('*')
+    .eq('owner_id', user.id)
+    .order('created_at', { ascending: false })
+
+  const getFileUrl = (storagePath: string) => {
+    const { data } = supabase.storage.from('files').getPublicUrl(storagePath)
+    return data.publicUrl
+  }
+
+  const formatSize = (bytes: number) => {
+    if (bytes < 1024) return bytes + ' B'
+    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB'
+    return (bytes / (1024 * 1024)).toFixed(1) + ' MB'
+  }
+
+  return (
+    <div className="min-h-screen bg-[#0a0a0f] text-white">
+      <div className="max-w-4xl mx-auto px-4 py-8">
+        <Link href="/dashboard" className="inline-flex items-center gap-2 text-gray-400 hover:text-white mb-8 transition-colors">
+          <ArrowLeft className="w-4 h-4" />
+          Back to Dashboard
+        </Link>
+
+        <div className="mb-8">
+          <h1 className="text-3xl font-bold text-purple-300">{profile.full_name || profile.username}</h1>
+          <p className="text-gray-400 mt-1">@{profile.username} · Your private space</p>
+          {profile.bio && <p className="text-gray-300 mt-2">{profile.bio}</p>}
+        </div>
+
+        {!files || files.length === 0 ? (
+          <div className="text-center py-16 text-gray-500">
+            <FileIcon className="w-12 h-12 mx-auto mb-4 opacity-30" />
+            <p>No files uploaded yet.</p>
+            <Link href="/dashboard" className="text-purple-400 hover:underline mt-2 inline-block">Go to Dashboard to upload</Link>
+          </div>
         ) : (
-          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
-            {files.map(f => {
-              const url = SUPA_URL+'/storage/v1/object/public/files/'+f.storage_path
-              return (
-                <a key={f.file_id} href={url} target="_blank" rel="noopener noreferrer" className="bg-gray-900 rounded-xl overflow-hidden border border-gray-800 hover:border-purple-500 transition block">
-                  {f.file_type?.startsWith('image') ? <img src={url} alt={f.name} className="w-full h-48 object-cover"/> : f.file_type?.startsWith('video') ? <video src={url} className="w-full h-48 object-cover"/> : <div className="w-full h-48 flex items-center justify-center bg-gray-800"><FileIcon className="w-16 h-16 text-gray-600"/></div>}
-                  <div className="p-3"><p className="text-sm font-medium truncate text-gray-200">{f.name}</p><p className="text-xs text-gray-500">{fmt(f.file_size)}</p></div>
-                </a>
-              )
-            })}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+            {files.map((file: any) => (
+              <a
+                key={file.file_id}
+                href={getFileUrl(file.storage_path)}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="bg-[#1a1a2e] rounded-xl p-4 hover:bg-[#16213e] transition-colors block"
+              >
+                {file.file_type?.startsWith('image/') ? (
+                  <img
+                    src={getFileUrl(file.storage_path)}
+                    alt={file.name}
+                    className="w-full h-40 object-cover rounded-lg mb-3"
+                  />
+                ) : (
+                  <div className="w-full h-40 bg-[#0f0f23] rounded-lg mb-3 flex items-center justify-center">
+                    <FileIcon className="w-12 h-12 text-purple-400" />
+                  </div>
+                )}
+                <p className="text-sm font-medium truncate">{file.name}</p>
+                <p className="text-xs text-gray-500 mt-1">{formatSize(file.file_size || 0)}</p>
+              </a>
+            ))}
           </div>
         )}
       </div>
